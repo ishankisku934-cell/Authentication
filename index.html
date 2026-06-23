@@ -6,7 +6,6 @@
     <title>QR Authenticator, Verifier & PDF Scanner</title>
     
     <script src="https://unpkg.com/html5-qrcode"></script>
-    
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 
     <style>
@@ -139,20 +138,36 @@
 
     let html5QrCode;
 
-    // --- Core Verification Logic (Shared) ---
+    // --- Core Verification Logic (Updated Reverse Engineering) ---
     function verifyAuthData(text) {
+        // 1. Check for Main Session Signature: AUTH_YT_123456_HashData
         if (text.startsWith("AUTH_YT_")) {
             const parts = text.split("_");
             if (parts.length >= 4) {
                 return {
                     authentic: true,
                     statusClass: 'authentic',
-                    badgeLabel: '✅ Authentic',
+                    badgeLabel: '✅ Authentic Session QR',
                     id: parts[2],
                     hash: parts.slice(3).join("_")
                 };
             }
         }
+        // 2. Check for Page-Specific Signature: PAGE_AUTH_[PDFName_PageNum]_HashData
+        else if (text.startsWith("PAGE_AUTH_")) {
+            const match = text.match(/^PAGE_AUTH_\[(.*?)\]_(.*)$/);
+            if (match) {
+                return {
+                    authentic: true,
+                    statusClass: 'authentic',
+                    badgeLabel: '✅ Authentic Page QR',
+                    id: match[1], // Example: Summary_P1
+                    hash: match[2]
+                };
+            }
+        }
+
+        // If neither algorithm matches
         return {
             authentic: false,
             statusClass: 'fake',
@@ -162,7 +177,7 @@
         };
     }
 
-    // --- 1. Handle PDF Upload ---
+    // --- 1. Handle PDF Upload (Multi-page Fix Applied) ---
     async function scanPDF(event) {
         const file = event.target.files[0];
         if (!file) return;
@@ -173,12 +188,12 @@
         const pdfResults = document.getElementById('pdf-results');
         const tbody = document.getElementById('pdf-table-body');
         
-        tbody.innerHTML = "<tr><td colspan='3' class='loading'>⏳ Scanning PDF pages... Please wait.</td></tr>";
+        // Add dynamic loading row
+        tbody.innerHTML = "<tr><td colspan='3' id='pdf-loading-status' class='loading'>⏳ Initializing PDF Scanner...</td></tr>";
         pdfResults.style.display = "block";
 
-        // Check Native BarcodeDetector API support
         if (!('BarcodeDetector' in window)) {
-            tbody.innerHTML = "<tr><td colspan='3' style='color:red; text-align:center; padding: 20px;'>Your browser does not support multi-QR scanning. Please use Google Chrome (Desktop/Android) or Edge.</td></tr>";
+            tbody.innerHTML = "<tr><td colspan='3' style='color:red; text-align:center; padding: 20px;'>Your browser does not support multi-QR scanning. Please use Google Chrome or Edge.</td></tr>";
             return;
         }
 
@@ -187,63 +202,78 @@
             const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
             const barcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
             
-            tbody.innerHTML = ""; // Clear loading
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d', { willReadFrequently: true });
+            
             let totalFound = 0;
+            // Temporary storage for rows so we can replace the loading text at the end
+            let rowsHTML = ""; 
 
+            // Loop strictly through all pages
             for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-                const page = await pdf.getPage(pageNum);
-                const viewport = page.getViewport({ scale: 2.0 }); // High-res scale for better accuracy
-                
-                // Render page to canvas
-                const canvas = document.createElement('canvas');
-                const context = canvas.getContext('2d');
-                canvas.width = viewport.width;
-                canvas.height = viewport.height;
-                await page.render({ canvasContext: context, viewport: viewport }).promise;
+                try {
+                    // Update UI with current progress
+                    document.getElementById('pdf-loading-status').innerText = `⏳ Scanning page ${pageNum} of ${pdf.numPages}... Please wait.`;
+                    
+                    const page = await pdf.getPage(pageNum);
+                    const viewport = page.getViewport({ scale: 2.0 }); // High-res scale
+                    
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+                    
+                    await page.render({ canvasContext: context, viewport: viewport }).promise;
 
-                // Detect QRs on this page
-                const barcodes = await barcodeDetector.detect(canvas);
-                
-                if (barcodes.length > 0) {
-                    // Sorting Logic: Reading order (Top-Bottom, Left-Right)
-                    barcodes.sort((a, b) => {
-                        // If Y difference is less than 30px, consider them on the same line
-                        if (Math.abs(a.boundingBox.y - b.boundingBox.y) > 30) {
-                            return a.boundingBox.y - b.boundingBox.y; 
-                        }
-                        return a.boundingBox.x - b.boundingBox.x;
-                    });
+                    // Detect QRs on the current rendered page
+                    const barcodes = await barcodeDetector.detect(canvas);
+                    
+                    if (barcodes.length > 0) {
+                        barcodes.sort((a, b) => {
+                            if (Math.abs(a.boundingBox.y - b.boundingBox.y) > 30) {
+                                return a.boundingBox.y - b.boundingBox.y; 
+                            }
+                            return a.boundingBox.x - b.boundingBox.x;
+                        });
 
-                    barcodes.forEach((qr, index) => {
-                        totalFound++;
-                        const verifyResult = verifyAuthData(qr.rawValue);
-                        const row = document.createElement('tr');
-                        
-                        let detailsHTML = `<strong>Raw:</strong> <span style="word-break:break-all;">${qr.rawValue}</span>`;
-                        if (verifyResult.authentic) {
-                            detailsHTML += `<br><strong style="color:var(--primary); margin-top:5px; display:inline-block;">Signature ID:</strong> #${verifyResult.id}`;
-                            detailsHTML += `<br><strong>Hash:</strong> <span style="word-break:break-all; font-size:0.9em;">${verifyResult.hash}</span>`;
-                        }
+                        barcodes.forEach((qr, index) => {
+                            totalFound++;
+                            const verifyResult = verifyAuthData(qr.rawValue);
+                            
+                            let detailsHTML = `<strong>Raw:</strong> <span style="word-break:break-all;">${qr.rawValue}</span>`;
+                            if (verifyResult.authentic) {
+                                detailsHTML += `<br><strong style="color:var(--primary); margin-top:5px; display:inline-block;">Signature ID:</strong> [${verifyResult.id}]`;
+                                detailsHTML += `<br><strong>Hash:</strong> <span style="word-break:break-all; font-size:0.9em;">${verifyResult.hash}</span>`;
+                            }
 
-                        row.innerHTML = `
-                            <td>
-                                <strong>Page ${pageNum}</strong><br>
-                                <span style="color:#64748b; font-size:0.9rem;">QR Order: ${index + 1}</span>
-                            </td>
-                            <td>
-                                <div class="status-badge ${verifyResult.statusClass}">${verifyResult.badgeLabel}</div>
-                            </td>
-                            <td style="font-size: 0.95rem;">
-                                ${detailsHTML}
-                            </td>
-                        `;
-                        tbody.appendChild(row);
-                    });
+                            rowsHTML += `
+                                <tr>
+                                    <td>
+                                        <strong>Page ${pageNum}</strong><br>
+                                        <span style="color:#64748b; font-size:0.9rem;">QR Order: ${index + 1}</span>
+                                    </td>
+                                    <td>
+                                        <div class="status-badge ${verifyResult.statusClass}">${verifyResult.badgeLabel}</div>
+                                    </td>
+                                    <td style="font-size: 0.95rem;">
+                                        ${detailsHTML}
+                                    </td>
+                                </tr>
+                            `;
+                        });
+                    }
+                    
+                    // Clear memory for the next page to prevent freezing
+                    page.cleanup();
+                    
+                } catch (pageErr) {
+                    console.error(`Error scanning page ${pageNum}:`, pageErr);
                 }
             }
 
+            // After looping all pages, update the table
             if (totalFound === 0) {
                 tbody.innerHTML = "<tr><td colspan='3' style='text-align:center; padding: 20px; color:#64748b;'>No QR Codes detected in this PDF.</td></tr>";
+            } else {
+                tbody.innerHTML = rowsHTML;
             }
 
         } catch (error) {
@@ -324,7 +354,7 @@
         statusBadge.innerText = verify.badgeLabel;
 
         if (verify.authentic) {
-            document.getElementById('auth-id').innerText = "#" + verify.id;
+            document.getElementById('auth-id').innerText = verify.id;
             document.getElementById('auth-hash').innerText = verify.hash;
             authDetails.style.display = "block";
         } else {
