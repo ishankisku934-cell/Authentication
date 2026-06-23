@@ -79,9 +79,6 @@
         .status-badge.authentic { background: var(--success); color: white; }
         .status-badge.fake { background: var(--danger); color: white; }
         
-        .data-row { margin-bottom: 10px; font-family: monospace; font-size: 0.95rem; }
-        .data-row span.label { font-weight: bold; color: #475569; font-family: sans-serif; display: inline-block; width: 120px; }
-        
         .stop-btn { background: var(--danger); margin-top: 15px; display: none; }
         .stop-btn:hover { background: #b91c1c; }
         
@@ -109,11 +106,7 @@
 
     <div id="result-card">
         <div id="status-badge" class="status-badge">Checking...</div>
-        <div class="data-row"><span class="label">Raw Data:</span> <span id="raw-text"></span></div>
-        <div id="auth-details" style="display:none; margin-top: 15px; border-top: 1px solid #cbd5e1; padding-top: 15px;">
-            <div class="data-row"><span class="label">Signature ID:</span> <span id="auth-id" style="color:var(--primary); font-weight:bold;"></span></div>
-            <div class="data-row"><span class="label">Encrypted Hash:</span> <span id="auth-hash"></span></div>
-        </div>
+        <div id="extracted-details" style="display:none; margin-top: 10px; font-size: 1.05rem; color: #334155;"></div>
     </div>
 
     <div id="pdf-results">
@@ -123,8 +116,8 @@
             <thead>
                 <tr>
                     <th style="width: 15%;">Position</th>
-                    <th style="width: 20%;">Status</th>
-                    <th style="width: 65%;">Data Details</th>
+                    <th style="width: 25%;">Status</th>
+                    <th style="width: 60%;">Data Details</th>
                 </tr>
             </thead>
             <tbody id="pdf-table-body"></tbody>
@@ -138,46 +131,67 @@
 
     let html5QrCode;
 
-    // --- Core Verification Logic (Updated Reverse Engineering) ---
+    // --- Core Verification Logic & Reverse Engineering ---
     function verifyAuthData(text) {
-        // 1. Check for Main Session Signature: AUTH_YT_123456_HashData
+        // 1. Check for Main Session Signature
         if (text.startsWith("AUTH_YT_")) {
-            const parts = text.split("_");
-            if (parts.length >= 4) {
-                return {
-                    authentic: true,
-                    statusClass: 'authentic',
-                    badgeLabel: '✅ Authentic Session QR',
-                    id: parts[2],
-                    hash: parts.slice(3).join("_")
-                };
-            }
+            return { authentic: true, statusClass: 'authentic', badgeLabel: '✅ Authentic QR', isDetailQR: false };
         }
-        // 2. Check for Page-Specific Signature: PAGE_AUTH_[PDFName_PageNum]_HashData
+        // 2. Check for Page-Specific Signature
         else if (text.startsWith("PAGE_AUTH_")) {
-            const match = text.match(/^PAGE_AUTH_\[(.*?)\]_(.*)$/);
-            if (match) {
-                return {
-                    authentic: true,
-                    statusClass: 'authentic',
-                    badgeLabel: '✅ Authentic Page QR',
-                    id: match[1], // Example: Summary_P1
-                    hash: match[2]
-                };
+            return { authentic: true, statusClass: 'authentic', badgeLabel: '✅ Authentic QR', isDetailQR: false };
+        }
+        // 3. Reverse Engineering for Details QRs (URL, USER, LEC)
+        else if (text.match(/^(URL|USER|LEC)_SECURE_\[(.*?)\]$/)) {
+            const match = text.match(/^(URL|USER|LEC)_SECURE_\[(.*?)\]$/);
+            const prefix = match[1];
+            const base64str = match[2];
+            
+            let detailLabel = "";
+            if (prefix === "URL") detailLabel = "Video Link";
+            else if (prefix === "USER") detailLabel = "Viewer Name";
+            else if (prefix === "LEC") detailLabel = "Lecture Name";
+
+            let extractedData = "Encrypted Data";
+            
+            try {
+                // Fixing truncated base64 padding
+                let paddedStr = base64str;
+                while (paddedStr.length % 4 !== 0) paddedStr += "=";
+                
+                let decoded = atob(paddedStr);
+                
+                // Extracting original data string before URI decode
+                let dataMatch = decoded.match(/DATA:(.*?)(?:\|TIME:|$)/);
+                if (dataMatch) {
+                    let rawExtracted = dataMatch[1];
+                    // Safely decoding URI component, fallback if truncated
+                    try { 
+                        extractedData = decodeURIComponent(rawExtracted); 
+                    } catch(e) { 
+                        extractedData = unescape(rawExtracted); 
+                    }
+                }
+            } catch (e) {
+                console.error("Decoding error:", e);
+                extractedData = "Data securely encrypted";
             }
+
+            return { 
+                authentic: true, 
+                statusClass: 'authentic', 
+                badgeLabel: '✅ Authentic QR', 
+                isDetailQR: true,
+                detailLabel: detailLabel,
+                extractedData: extractedData
+            };
         }
 
-        // If neither algorithm matches
-        return {
-            authentic: false,
-            statusClass: 'fake',
-            badgeLabel: '❌ Fake / Unverified',
-            id: null,
-            hash: null
-        };
+        // Fake / Unverified
+        return { authentic: false, statusClass: 'fake', badgeLabel: '❌ Fake / Unverified', isDetailQR: false };
     }
 
-    // --- 1. Handle PDF Upload (Multi-page Fix Applied) ---
+    // --- 1. Handle PDF Upload ---
     async function scanPDF(event) {
         const file = event.target.files[0];
         if (!file) return;
@@ -188,7 +202,6 @@
         const pdfResults = document.getElementById('pdf-results');
         const tbody = document.getElementById('pdf-table-body');
         
-        // Add dynamic loading row
         tbody.innerHTML = "<tr><td colspan='3' id='pdf-loading-status' class='loading'>⏳ Initializing PDF Scanner...</td></tr>";
         pdfResults.style.display = "block";
 
@@ -206,24 +219,21 @@
             const context = canvas.getContext('2d', { willReadFrequently: true });
             
             let totalFound = 0;
-            // Temporary storage for rows so we can replace the loading text at the end
             let rowsHTML = ""; 
 
             // Loop strictly through all pages
             for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
                 try {
-                    // Update UI with current progress
                     document.getElementById('pdf-loading-status').innerText = `⏳ Scanning page ${pageNum} of ${pdf.numPages}... Please wait.`;
                     
                     const page = await pdf.getPage(pageNum);
-                    const viewport = page.getViewport({ scale: 2.0 }); // High-res scale
+                    const viewport = page.getViewport({ scale: 2.0 });
                     
                     canvas.width = viewport.width;
                     canvas.height = viewport.height;
                     
                     await page.render({ canvasContext: context, viewport: viewport }).promise;
 
-                    // Detect QRs on the current rendered page
                     const barcodes = await barcodeDetector.detect(canvas);
                     
                     if (barcodes.length > 0) {
@@ -238,10 +248,13 @@
                             totalFound++;
                             const verifyResult = verifyAuthData(qr.rawValue);
                             
-                            let detailsHTML = `<strong>Raw:</strong> <span style="word-break:break-all;">${qr.rawValue}</span>`;
-                            if (verifyResult.authentic) {
-                                detailsHTML += `<br><strong style="color:var(--primary); margin-top:5px; display:inline-block;">Signature ID:</strong> [${verifyResult.id}]`;
-                                detailsHTML += `<br><strong>Hash:</strong> <span style="word-break:break-all; font-size:0.9em;">${verifyResult.hash}</span>`;
+                            let detailsHTML = "";
+                            if (verifyResult.isDetailQR) {
+                                detailsHTML = `<strong>${verifyResult.detailLabel}:</strong> <span style="color:var(--primary);">${verifyResult.extractedData}</span>`;
+                            } else if (verifyResult.authentic) {
+                                detailsHTML = `<span style="color:#10b981; font-weight:bold;">Secured Verification Token</span>`;
+                            } else {
+                                detailsHTML = `<span style="color:#dc2626;">No readable details found</span>`;
                             }
 
                             rowsHTML += `
@@ -260,8 +273,6 @@
                             `;
                         });
                     }
-                    
-                    // Clear memory for the next page to prevent freezing
                     page.cleanup();
                     
                 } catch (pageErr) {
@@ -269,7 +280,6 @@
                 }
             }
 
-            // After looping all pages, update the table
             if (totalFound === 0) {
                 tbody.innerHTML = "<tr><td colspan='3' style='text-align:center; padding: 20px; color:#64748b;'>No QR Codes detected in this PDF.</td></tr>";
             } else {
@@ -281,7 +291,7 @@
             tbody.innerHTML = "<tr><td colspan='3' style='color:red; text-align:center; padding: 20px;'>Error processing PDF. The file might be corrupted.</td></tr>";
         }
         
-        document.getElementById('pdf-input').value = ""; // Reset input
+        document.getElementById('pdf-input').value = "";
     }
 
     // --- 2. Handle File Upload (Image) ---
@@ -342,10 +352,9 @@
         document.getElementById('pdf-results').style.display = "none";
         const resultCard = document.getElementById('result-card');
         const statusBadge = document.getElementById('status-badge');
-        const authDetails = document.getElementById('auth-details');
+        const detailsDiv = document.getElementById('extracted-details');
         
         resultCard.style.display = "block";
-        document.getElementById('raw-text').innerText = text;
         
         const verify = verifyAuthData(text);
         
@@ -353,12 +362,14 @@
         statusBadge.className = `status-badge ${verify.statusClass}`;
         statusBadge.innerText = verify.badgeLabel;
 
-        if (verify.authentic) {
-            document.getElementById('auth-id').innerText = verify.id;
-            document.getElementById('auth-hash').innerText = verify.hash;
-            authDetails.style.display = "block";
+        if (verify.authentic && verify.isDetailQR) {
+            detailsDiv.innerHTML = `<strong>${verify.detailLabel}:</strong> <span style="color:var(--primary);">${verify.extractedData}</span>`;
+            detailsDiv.style.display = "block";
+        } else if (verify.authentic && !verify.isDetailQR) {
+            detailsDiv.innerHTML = `<span style="color:#10b981; font-weight:bold;">Secured Verification Token</span>`;
+            detailsDiv.style.display = "block";
         } else {
-            authDetails.style.display = "none";
+            detailsDiv.style.display = "none";
         }
     }
 </script>
