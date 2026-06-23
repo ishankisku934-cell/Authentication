@@ -3,9 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QR Authenticator & Verifier</title>
+    <title>QR Authenticator, Verifier & PDF Scanner</title>
     
     <script src="https://unpkg.com/html5-qrcode"></script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 
     <style>
         :root {
@@ -13,6 +15,7 @@
             --card-bg: #ffffff;
             --text: #0f172a;
             --primary: #2563eb;
+            --pdf-color: #8b5cf6;
             --success: #10b981;
             --danger: #dc2626;
         }
@@ -27,7 +30,7 @@
             align-items: center;
         }
         .container {
-            max-width: 600px;
+            max-width: 700px;
             width: 100%;
             background: var(--card-bg);
             padding: 30px;
@@ -41,18 +44,19 @@
         /* Scanner Section */
         #reader { width: 100%; border-radius: 8px; overflow: hidden; margin-bottom: 20px; display: none; }
         
-        .action-btns { display: flex; gap: 15px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
+        .action-btns { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
         button, .upload-btn {
-            background: var(--primary); color: white; border: none; padding: 12px 24px;
+            background: var(--primary); color: white; border: none; padding: 10px 20px;
             border-radius: 8px; cursor: pointer; font-size: 1rem; font-weight: bold; transition: 0.2s;
             display: inline-block; text-align: center; text-decoration: none;
         }
-        button:hover, .upload-btn:hover { background: #1d4ed8; }
+        button:hover, .upload-btn:hover { filter: brightness(1.1); }
+        .pdf-btn { background: var(--pdf-color); }
         
-        /* Hidden File Input */
-        #file-input { display: none; }
+        /* Hidden File Inputs */
+        input[type="file"] { display: none; }
         
-        /* Result Section */
+        /* Single Result Section */
         #result-card {
             display: none;
             background: #f1f5f9; padding: 20px; border-radius: 8px;
@@ -62,9 +66,16 @@
         #result-card.authentic { border-color: var(--success); background: #ecfdf5; }
         #result-card.fake { border-color: var(--danger); background: #fef2f2; }
         
+        /* PDF Results Table */
+        #pdf-results { display: none; margin-top: 20px; text-align: left; width: 100%; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 12px; border: 1px solid #cbd5e1; vertical-align: top; }
+        th { background: #f8fafc; color: #334155; font-weight: bold; }
+        tr:nth-child(even) { background: #fbfcfd; }
+        
         .status-badge {
-            display: inline-block; padding: 8px 15px; border-radius: 50px; font-weight: bold;
-            font-size: 1.1rem; margin-bottom: 15px;
+            display: inline-block; padding: 6px 12px; border-radius: 50px; font-weight: bold;
+            font-size: 0.9rem; margin-bottom: 5px;
         }
         .status-badge.authentic { background: var(--success); color: white; }
         .status-badge.fake { background: var(--danger); color: white; }
@@ -74,19 +85,24 @@
         
         .stop-btn { background: var(--danger); margin-top: 15px; display: none; }
         .stop-btn:hover { background: #b91c1c; }
+        
+        .loading { color: var(--primary); font-weight: bold; padding: 20px; text-align: center; }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>Tracker QR Verifier</h2>
-    <p class="subtitle">Scan or upload a QR code to verify its authenticity.</p>
+    <h2>Tracker QR Verifier & PDF Scanner</h2>
+    <p class="subtitle">Scan via camera, image, or upload a multi-page PDF.</p>
 
     <div class="action-btns">
-        <label for="file-input" class="upload-btn">📁 Upload QR Image</label>
-        <input type="file" id="file-input" accept="image/*" onchange="scanImage(event)">
+        <label for="image-input" class="upload-btn">📁 Upload Image</label>
+        <input type="file" id="image-input" accept="image/*" onchange="scanImage(event)">
         
-        <button onclick="startCamera()">📷 Scan via Camera</button>
+        <label for="pdf-input" class="upload-btn pdf-btn">📄 Upload PDF</label>
+        <input type="file" id="pdf-input" accept="application/pdf" onchange="scanPDF(event)">
+        
+        <button onclick="startCamera()">📷 Scan Camera</button>
     </div>
 
     <div id="reader"></div>
@@ -94,61 +110,184 @@
 
     <div id="result-card">
         <div id="status-badge" class="status-badge">Checking...</div>
-        
         <div class="data-row"><span class="label">Raw Data:</span> <span id="raw-text"></span></div>
-        
         <div id="auth-details" style="display:none; margin-top: 15px; border-top: 1px solid #cbd5e1; padding-top: 15px;">
             <div class="data-row"><span class="label">Signature ID:</span> <span id="auth-id" style="color:var(--primary); font-weight:bold;"></span></div>
             <div class="data-row"><span class="label">Encrypted Hash:</span> <span id="auth-hash"></span></div>
         </div>
     </div>
+
+    <div id="pdf-results">
+        <h3 style="margin-bottom: 5px; color: #1e293b;">PDF Analysis Report</h3>
+        <p style="margin-top: 0; font-size: 0.85rem; color: #64748b;">QRs are sorted by reading order (Left to Right, Top to Bottom).</p>
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 15%;">Position</th>
+                    <th style="width: 20%;">Status</th>
+                    <th style="width: 65%;">Data Details</th>
+                </tr>
+            </thead>
+            <tbody id="pdf-table-body"></tbody>
+        </table>
+    </div>
 </div>
 
 <script>
+    // Initialize PDF.js worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
     let html5QrCode;
 
-    // --- 1. Handle File Upload (Image) ---
+    // --- Core Verification Logic (Shared) ---
+    function verifyAuthData(text) {
+        if (text.startsWith("AUTH_YT_")) {
+            const parts = text.split("_");
+            if (parts.length >= 4) {
+                return {
+                    authentic: true,
+                    statusClass: 'authentic',
+                    badgeLabel: '✅ Authentic',
+                    id: parts[2],
+                    hash: parts.slice(3).join("_")
+                };
+            }
+        }
+        return {
+            authentic: false,
+            statusClass: 'fake',
+            badgeLabel: '❌ Fake / Unverified',
+            id: null,
+            hash: null
+        };
+    }
+
+    // --- 1. Handle PDF Upload ---
+    async function scanPDF(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        // Reset UI
+        stopCamera();
+        document.getElementById('result-card').style.display = "none";
+        const pdfResults = document.getElementById('pdf-results');
+        const tbody = document.getElementById('pdf-table-body');
+        
+        tbody.innerHTML = "<tr><td colspan='3' class='loading'>⏳ Scanning PDF pages... Please wait.</td></tr>";
+        pdfResults.style.display = "block";
+
+        // Check Native BarcodeDetector API support
+        if (!('BarcodeDetector' in window)) {
+            tbody.innerHTML = "<tr><td colspan='3' style='color:red; text-align:center; padding: 20px;'>Your browser does not support multi-QR scanning. Please use Google Chrome (Desktop/Android) or Edge.</td></tr>";
+            return;
+        }
+
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            const barcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
+            
+            tbody.innerHTML = ""; // Clear loading
+            let totalFound = 0;
+
+            for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                const page = await pdf.getPage(pageNum);
+                const viewport = page.getViewport({ scale: 2.0 }); // High-res scale for better accuracy
+                
+                // Render page to canvas
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+                await page.render({ canvasContext: context, viewport: viewport }).promise;
+
+                // Detect QRs on this page
+                const barcodes = await barcodeDetector.detect(canvas);
+                
+                if (barcodes.length > 0) {
+                    // Sorting Logic: Reading order (Top-Bottom, Left-Right)
+                    barcodes.sort((a, b) => {
+                        // If Y difference is less than 30px, consider them on the same line
+                        if (Math.abs(a.boundingBox.y - b.boundingBox.y) > 30) {
+                            return a.boundingBox.y - b.boundingBox.y; 
+                        }
+                        return a.boundingBox.x - b.boundingBox.x;
+                    });
+
+                    barcodes.forEach((qr, index) => {
+                        totalFound++;
+                        const verifyResult = verifyAuthData(qr.rawValue);
+                        const row = document.createElement('tr');
+                        
+                        let detailsHTML = `<strong>Raw:</strong> <span style="word-break:break-all;">${qr.rawValue}</span>`;
+                        if (verifyResult.authentic) {
+                            detailsHTML += `<br><strong style="color:var(--primary); margin-top:5px; display:inline-block;">Signature ID:</strong> #${verifyResult.id}`;
+                            detailsHTML += `<br><strong>Hash:</strong> <span style="word-break:break-all; font-size:0.9em;">${verifyResult.hash}</span>`;
+                        }
+
+                        row.innerHTML = `
+                            <td>
+                                <strong>Page ${pageNum}</strong><br>
+                                <span style="color:#64748b; font-size:0.9rem;">QR Order: ${index + 1}</span>
+                            </td>
+                            <td>
+                                <div class="status-badge ${verifyResult.statusClass}">${verifyResult.badgeLabel}</div>
+                            </td>
+                            <td style="font-size: 0.95rem;">
+                                ${detailsHTML}
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                }
+            }
+
+            if (totalFound === 0) {
+                tbody.innerHTML = "<tr><td colspan='3' style='text-align:center; padding: 20px; color:#64748b;'>No QR Codes detected in this PDF.</td></tr>";
+            }
+
+        } catch (error) {
+            console.error(error);
+            tbody.innerHTML = "<tr><td colspan='3' style='color:red; text-align:center; padding: 20px;'>Error processing PDF. The file might be corrupted.</td></tr>";
+        }
+        
+        document.getElementById('pdf-input').value = ""; // Reset input
+    }
+
+    // --- 2. Handle File Upload (Image) ---
     function scanImage(event) {
         const file = event.target.files[0];
         if (!file) return;
 
-        if (!html5QrCode) {
-            html5QrCode = new Html5Qrcode("reader");
-        }
-
-        // Hide camera if it was open
+        if (!html5QrCode) html5QrCode = new Html5Qrcode("reader");
         if (html5QrCode.isScanning) stopCamera();
 
         html5QrCode.scanFile(file, true)
-            .then(decodedText => {
-                processResult(decodedText);
-            })
+            .then(decodedText => { processSingleResult(decodedText); })
             .catch(err => {
-                alert("QR Code not found in the image. Please try a clearer image.");
-                document.getElementById('file-input').value = ""; // Reset input
+                alert("QR Code not found. Please try a clearer image.");
             });
+        
+        document.getElementById('image-input').value = "";
     }
 
-    // --- 2. Handle Camera Scan ---
+    // --- 3. Handle Camera Scan ---
     function startCamera() {
         document.getElementById('result-card').style.display = "none";
+        document.getElementById('pdf-results').style.display = "none";
         document.getElementById('reader').style.display = "block";
         document.getElementById('stop-btn').style.display = "inline-block";
 
-        if (!html5QrCode) {
-            html5QrCode = new Html5Qrcode("reader");
-        }
+        if (!html5QrCode) html5QrCode = new Html5Qrcode("reader");
 
         html5QrCode.start(
-            { facingMode: "environment" }, // Use back camera
+            { facingMode: "environment" },
             { fps: 10, qrbox: { width: 250, height: 250 } },
-            (decodedText, decodedResult) => {
-                stopCamera(); // Stop camera once successfully scanned
-                processResult(decodedText);
+            (decodedText) => {
+                stopCamera(); 
+                processSingleResult(decodedText);
             },
-            (errorMessage) => {
-                // Background scanning errors, ignore them
-            }
+            (errorMessage) => { /* ignore background errors */ }
         ).catch((err) => {
             alert("Camera access denied or not supported.");
             stopCamera();
@@ -157,58 +296,40 @@
 
     function stopCamera() {
         if (html5QrCode && html5QrCode.isScanning) {
-            html5QrCode.stop().then(() => {
-                document.getElementById('reader').style.display = "none";
-                document.getElementById('stop-btn').style.display = "none";
-            });
+            html5QrCode.stop().then(hideCameraUI);
         } else {
-            document.getElementById('reader').style.display = "none";
-            document.getElementById('stop-btn').style.display = "none";
+            hideCameraUI();
         }
     }
+    
+    function hideCameraUI() {
+        document.getElementById('reader').style.display = "none";
+        document.getElementById('stop-btn').style.display = "none";
+    }
 
-    // --- 3. Reverse Engineering & Verification Logic ---
-    function processResult(text) {
+    // --- 4. Process Single Scan Result ---
+    function processSingleResult(text) {
+        document.getElementById('pdf-results').style.display = "none";
         const resultCard = document.getElementById('result-card');
         const statusBadge = document.getElementById('status-badge');
-        const rawText = document.getElementById('raw-text');
         const authDetails = document.getElementById('auth-details');
         
         resultCard.style.display = "block";
-        rawText.innerText = text;
+        document.getElementById('raw-text').innerText = text;
         
-        // Reset classes
-        resultCard.className = "";
-        statusBadge.className = "status-badge";
+        const verify = verifyAuthData(text);
+        
+        resultCard.className = verify.statusClass;
+        statusBadge.className = `status-badge ${verify.statusClass}`;
+        statusBadge.innerText = verify.badgeLabel;
 
-        // Checking our custom Signature Format: "AUTH_YT_XXXXXX_HashData"
-        if (text.startsWith("AUTH_YT_")) {
-            const parts = text.split("_");
-            
-            if (parts.length >= 4) {
-                // It's Authentic
-                resultCard.classList.add("authentic");
-                statusBadge.classList.add("authentic");
-                statusBadge.innerText = "✅ Authentic Signature";
-                
-                // Extracting Reverse Engineered Data
-                const authId = parts[2];
-                // Join the rest in case hash contained underscores
-                const hashData = parts.slice(3).join("_"); 
-                
-                document.getElementById('auth-id').innerText = "#" + authId;
-                document.getElementById('auth-hash').innerText = hashData;
-                authDetails.style.display = "block";
-                
-                return;
-            }
+        if (verify.authentic) {
+            document.getElementById('auth-id').innerText = "#" + verify.id;
+            document.getElementById('auth-hash').innerText = verify.hash;
+            authDetails.style.display = "block";
+        } else {
+            authDetails.style.display = "none";
         }
-        
-        // If it doesn't match our algorithm
-        resultCard.classList.add("fake");
-        statusBadge.classList.add("fake");
-        statusBadge.innerText = "❌ Unverified / Fake QR";
-        authDetails.style.display = "none";
     }
 </script>
 
